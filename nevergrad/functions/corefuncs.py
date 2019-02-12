@@ -3,8 +3,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import time
+from typing import Dict, Any, Tuple
 import numpy as np
-from ..optimization import discretization
+from .base import PostponedObject
+from ..instrumentation import discretization
 from ..common.decorators import Registry
 
 
@@ -36,6 +39,26 @@ def _styblinksitang(x: np.ndarray, noise: float) -> float:
     val = np.sum(np.power(x, 4) - 16 * np.power(x, 2) + 5 * x)
     # return a positive value for maximization
     return float(39.16599 * len(x) + 1 * 0.5 * val + noise * np.random.normal(size=val.shape))
+
+
+@registry.register
+def delayedsphere(x: np.ndarray) -> float:
+    '''For asynchronous experiments, we induce delays.'''
+    time.sleep(abs(1./x[0]) / 100000. if x[0] != 0. else 0.)
+    return float(np.sum(x**2))
+
+
+class DelayedSphere(PostponedObject):
+
+    def __call__(self, x: np.ndarray) -> float:
+        return float(np.sum(x**2))
+
+    def get_postponing_delay(self, arguments: Tuple[Tuple[Any, ...], Dict[str, Any]], value: float) -> float:
+        x = arguments[0][0]
+        return float(abs(1./x[0]) / 1000.) if x[0] != 0. else 0.
+
+
+registry.register(DelayedSphere())
 
 
 @registry.register
@@ -71,8 +94,19 @@ def sumdeceptive(x: np.ndarray) -> float:
 
 
 @registry.register
+def altcigar(x: np.ndarray) -> float:
+    return float(x[-1]**2 + 1000000. * np.sum(x[:-1]**2))
+
+
+@registry.register
 def cigar(x: np.ndarray) -> float:
     return float(x[0]**2 + 1000000. * np.sum(x[1:]**2))
+
+
+@registry.register
+def altellipsoid(y: np.ndarray) -> float:
+    x = y[::-1]
+    return sum((10**(6 * (i - 1) / float(len(x) - 1))) * (x[i]**2) for i in range(len(x)))
 
 
 @registry.register
@@ -94,6 +128,47 @@ def hm(x: np.ndarray) -> float:
 @registry.register
 def rosenbrock(x: np.ndarray) -> float:
     return sum(100.0*(x[1:] - x[:-1]**2.0)**2.0 + (1 - x[:-1])**2.0)
+
+
+@registry.register
+def griewank(x: np.ndarray) -> float:
+    part1 = np.sum(x**2)
+    part2 = np.prod(np.cos(x / np.sqrt(1 + np.arange(len(x)))))
+    return 1 + (float(part1)/4000.0) - float(part2)
+
+
+@registry.register
+def deceptiveillcond(x: np.ndarray) -> float:
+    assert len(x) >= 2
+    return float(max(np.abs(np.arctan(x[1]/x[0])),
+                     np.sqrt(x[0]**2. + x[1]**2.),
+                     1. if x[0] > 0 else 0.) if x[0] != 0. else float("inf"))
+
+
+@registry.register
+def deceptivepath(x: np.ndarray) -> float:
+    assert len(x) >= 2
+    distance = np.sqrt(x[0]**2 + x[1]**2)
+    if distance == 0.:
+        return 0.
+    angle = np.arctan(x[0] / x[1]) if x[1] != 0. else np.pi / 2.
+    invdistance = (1. / distance) if distance > 0. else 0.
+    if np.abs(np.cos(invdistance) - angle) > 0.1:
+        return 1.
+    return float(distance)
+
+
+@registry.register
+def deceptivemultimodal(x: np.ndarray) -> float:
+    assert len(x) >= 2
+    distance = np.sqrt(x[0]**2 + x[1]**2)
+    if distance == 0.:
+        return 0.
+    angle = np.arctan(x[0] / x[1]) if x[1] != 0. else np.pi / 2.
+    invdistance = int(1. / distance) if distance > 0. else 0.
+    if np.abs(np.cos(invdistance) - angle) > 0.1:
+        return 1.
+    return float(distance)
 
 
 @registry.register

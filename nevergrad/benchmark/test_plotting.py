@@ -58,9 +58,9 @@ def test_create_plots_from_csv() -> None:
 
 def test_remove_errors() -> None:
     data = [["alg0", 0, 10, np.nan],
-            ["alg1", 0, 20, ""],
-            ["alg1", np.nan, 30, "ValueError"],
-            ["alg2", np.nan, 40, "BlubluError"]]
+            ["alg2", np.nan, 30, "ValueError"],
+            ["alg1", 0, 20, "SomeHandledError"],
+            ["alg3", np.nan, 40, "BlubluError"]]
     df = pd.DataFrame(columns=["optimizer_name", "loss", "dimension", "error"], data=data)
     output = plotting.remove_errors(df)
     expected = pd.DataFrame(columns=["optimizer_name", "loss", "dimension"], data=[["alg0", 0, 10], ["alg1", 0, 20]])
@@ -70,7 +70,7 @@ def test_remove_errors() -> None:
     assert isinstance(output, plotting.tools.Selector)
 
 
-def test_make_style_generator():
+def test_make_style_generator() -> None:
     num = 364
     gen = plotting._make_style_generator()
     output = [next(gen) for _ in range(num)]
@@ -79,3 +79,10 @@ def test_make_style_generator():
     np.testing.assert_equal(len(set(output)), num)  # no repetition
     repeating = next(gen)
     np.testing.assert_equal(repeating, output[0])
+
+
+def test_name_style() -> None:
+    nstyle = plotting.NameStyle()
+    np.testing.assert_equal(nstyle["blublu"], "-ob")
+    np.testing.assert_equal(nstyle["plop"], "--vg")
+    np.testing.assert_equal(nstyle["blublu"], "-ob")

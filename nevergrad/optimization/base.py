@@ -5,16 +5,20 @@
 
 import abc
 import time
+from numbers import Real
 import warnings
-from typing import Optional, Tuple, Callable, Any, Dict, List, Union
+from typing import Optional, Tuple, Callable, Any, Dict, List, Union, NamedTuple
 import numpy as np
 from ..common.typetools import ArrayLike, JobLike, ExecutorLike
+from .. import instrumentation as instru
 from ..common.tools import Sleeper
 from ..common.decorators import Registry
 from . import utils
 
 
 registry = Registry()
+
+_OptimCallBack = Union[Callable[["Optimizer", ArrayLike, float], None], Callable[["Optimizer"], None]]
 
 
 class InefficientSettingsWarning(RuntimeWarning):
@@ -64,7 +68,7 @@ class Optimizer(abc.ABC):  # pylint: disable=too-many-instance-attributes
         # keep a record of evaluations, and current bests which are updated at each new evaluation
         self.archive: Dict[Tuple[float, ...], utils.Value] = {}
         self.current_bests = {x: utils.Point(tuple(0. for _ in range(dimension)), utils.Value(np.inf))
-                              for x in ["optimistic", "pessimistic"]}
+                              for x in ["optimistic", "pessimistic", "average"]}
         # instance state
         self._num_suggestions = 0
         self._num_evaluations = 0
@@ -85,8 +89,7 @@ class Optimizer(abc.ABC):  # pylint: disable=too-many-instance-attributes
     def __repr__(self) -> str:
         return f"Instance of {self.name}(dimension={self.dimension}, budget={self.budget}, num_workers={self.num_workers})"
 
-    def register_callback(self, name: str, callback: Union[Callable[["Optimizer", ArrayLike, float], None],
-                                                           Callable[["Optimizer"], None]]) -> None:
+    def register_callback(self, name: str, callback: _OptimCallBack) -> None:
         """Add a callback method called either when "tell" or "ask" are called, with the same
         arguments (including the optimizer / self). This can be useful for custom logging.
 
@@ -115,6 +118,8 @@ class Optimizer(abc.ABC):  # pylint: disable=too-many-instance-attributes
         value: float
             value of the function
         """
+        if not isinstance(value, Real):
+            raise TypeError(f'"tell" method only supports float values but the passed value was: {value} (type: {type(value)}.')
         if np.isnan(value) or value == np.inf:
             warnings.warn(f"Updating fitness with {value} value")
         x = tuple(x)
@@ -124,9 +129,9 @@ class Optimizer(abc.ABC):  # pylint: disable=too-many-instance-attributes
             self.archive[x].add_evaluation(value)
         # update current best records
         # this may have to be improved if we want to keep more kinds of best values
-        for name in ["optimistic", "pessimistic"]:
+        for name in ["optimistic", "pessimistic", "average"]:
             if x == self.current_bests[name].x:   # reboot
-                y: Tuple[float, ...] = min(self.archive, key=lambda x, n=name: self.archive[x].get_estimation(n))  # type: ignore
+                y: Tuple[float, ...] = min(self.archive, key=lambda x, n=name: self.archive[x].get_estimation(n))
                 # rebuild best point may change, and which value did not track the updated value anyway
                 self.current_bests[name] = utils.Point(y, self.archive[y])
             else:
@@ -145,6 +150,7 @@ class Optimizer(abc.ABC):  # pylint: disable=too-many-instance-attributes
         This function can be called multiple times to explore several points in parallel
         """
         suggestion = self._internal_ask()
+        assert suggestion is not None, f"{self.__class__.__name__}._internal_ask method returned None instead of a point."
         self._num_suggestions += 1
         # call callbacks for logging etc...
         for callback in self._callbacks.get("ask", []):
@@ -155,11 +161,6 @@ class Optimizer(abc.ABC):  # pylint: disable=too-many-instance-attributes
         """Provides the best point to use as a minimum, given the budget that was used
         """
         return self._internal_provide_recommendation()
-
-    # For compatibility. To be removed. TODO(oteytaud)
-    def suggest_point(self) -> Tuple[float, ...]:
-        warnings.warn("suggest_point should be converted to suggest_exploration", DeprecationWarning)
-        return self.suggest_exploration()
 
     # Internal methods which can be overloaded (or must be, in the case of _internal_ask)
     def _internal_tell(self, x: ArrayLike, value: float) -> None:
@@ -232,7 +233,10 @@ class Optimizer(abc.ABC):  # pylint: disable=too-many-instance-attributes
                 (finished if x_job[1].done() else runnings).append(x_job)
             # process finished
             if finished:
-                sleeper.stop_timer()
+                if budget or sleeper._start is not None:
+                    # ignore stop if no more suggestion is sent
+                    # this is an ugly hack to avoid warnings at the end of steady mode
+                    sleeper.stop_timer()
                 for x, job in finished:
                     self.tell(x, job.result())
                     if verbosity:
@@ -244,16 +248,6 @@ class Optimizer(abc.ABC):  # pylint: disable=too-many-instance-attributes
             else:
                 sleeper.sleep()
         return self.provide_recommendation()
-
-    # the following functions are there for compatibility reasons only and should not be used
-
-    def update_with_fitness_value(self, x: ArrayLike, value: float) -> None:
-        warnings.warn("Use 'tell' instead of 'update_with_fitness_value' (will fail in December)", DeprecationWarning)  # TODO remove
-        self.tell(x, value)
-
-    def suggest_exploration(self) -> Tuple[float, ...]:
-        warnings.warn("Use 'ask' instead of 'suggest_exploration' (will fail in December)", DeprecationWarning)  # TODO remove
-        return self.ask()
 
 
 class OptimizationPrinter:
@@ -280,3 +274,50 @@ class OptimizationPrinter:
             x = optimizer.provide_recommendation()
             point = x if x not in optimizer.archive else utils.Point(x, optimizer.archive[x])
             print(f"After {optimizer.num_evaluations}, recommendation is {point}")
+
+
+class ArgPoint(NamedTuple):
+    """Handle for args and kwargs arguments, keeping
+    the initial data in memory.
+    """
+    args: Tuple[Any, ...]
+    kwargs: Dict[str, Any]
+    data: ArrayLike
+
+
+class IntrumentedOptimizer:
+    """Optimizer which yields "ArgPoint"s instead of data points (np.ndarray).
+    ArgPoint structure directly provides args and kwargs to input to the function you
+    mean to optimize.
+    """
+
+    def __init__(self, optimizer: Optimizer, instrumentation: instru.Instrumentation) -> None:
+        assert optimizer.dimension == instrumentation.dimension
+        self._optimizer = optimizer
+        self.instrumentation = instrumentation
+
+    def ask(self) -> ArgPoint:
+        x = self._optimizer.ask()
+        args, kwargs = self.instrumentation.data_to_arguments(x)
+        return ArgPoint(args, kwargs, x)
+
+    def provide_recommendation(self) -> ArgPoint:
+        x = self._optimizer.provide_recommendation()
+        args, kwargs = self.instrumentation.data_to_arguments(x)
+        return ArgPoint(args, kwargs, x)
+
+    def tell(self, point: ArgPoint, value: float) -> None:
+        assert isinstance(point, ArgPoint), '"tell" can only receive an ArgPoint'
+        self._optimizer.tell(point.data, value)
+
+    def optimize(self, objective_function: Callable[..., float],
+                 executor: Optional[ExecutorLike] = None,
+                 batch_mode: bool = False,
+                 verbosity: int = 0) -> ArgPoint:
+        # for now, instrument the function and optimize
+        # this should be updated eventually to take benefit of the information
+        # provided by the instumentation
+        ifunc = instru.InstrumentedFunction(objective_function, *self.instrumentation.args,
+                                            **self.instrumentation.kwargs)
+        self._optimizer.optimize(ifunc, executor=executor, batch_mode=batch_mode, verbosity=verbosity)
+        return self.provide_recommendation()

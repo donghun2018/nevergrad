@@ -19,7 +19,7 @@ def launch(experiment: str, num_workers: int = 1, seed: Optional[int] = None,
     """Launch experiment with given names and selection modulo
     max_index can be specified to provide a limited number of settings
     """
-    # then create data
+    # create the data
     csvpath = Path(experiment + ".csv") if output is None else Path(output)
     if num_workers == 1:
         df = core.compute(experiment, cap_index=cap_index, seed=seed)
@@ -63,7 +63,7 @@ def repeated_launch(experiment: str, num_workers: int = 1, seed: Optional[int] =
                     cap_index: Optional[int] = None, output: Optional[PathLike] = None,
                     plot: Union[bool, PathLike] = False, imports: Optional[List[PathLike]] = None,
                     repetitions: int = 1) -> None:
-    """Launch experiment with given names and selection modulo
+    """Launch experiment with given names and selection module
     max_index can be specified to provide a limited number of settings
     This repeats the plan several times and increments the seed.
     """

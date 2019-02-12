@@ -65,11 +65,15 @@ For consistency and simplicity's sake, please prefer `numpy`'s random generator 
 Also, you may instanciate a random generator for each optimizer and using it afterwards. This way it makes the optimizer independent of other uses of the default random generator.
 Still, please seed it with the standard numpy random generator so that seeding the standard generator will produce deterministic outputs:
 ```python
-self._rng = np.ranndom.RandomState(np.random.randint(2**32))
+self._rng = np.random.RandomState(np.random.randint(2**32, dtype=np.uint32))
 ```
 
 A unit tests automatically makes sure that all optimizers have repeatable bvehaviors on a simple test case when seeded from outside (see below).
 
+
+### About type hints
+
+We have used [type hints](https://docs.python.org/3/library/typing.html) throughout `nevergrad` to make it more robust, and the continuous integration will check that everything is correct when pull requests are submitted. However, **we do not want typing to be an annoyance** for contributors who do not care about it, so please feel entirely free to use `# type: ignore` on each line the continuous integration will flag as incorrect, so that the errors disappear. If we consider it useful to have correct typing, we will update the code after your pull request is merged.
 
 ## How to test it
 
